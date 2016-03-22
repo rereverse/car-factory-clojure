@@ -3,18 +3,18 @@
   (:import [java.util.concurrent ThreadLocalRandom])
   (:gen-class))
 
-(defrecord CarPart [serial-number type defective]
+(defrecord CarPart [sn type defective]
   Object
   (toString [_]
     (str (condp = type
            :engine "Engine["
            :wheel "Wheel["
-           :coachworks "Coachworks[") "sn=" serial-number ", defective=" defective "]")))
+           :coachworks "Coachworks[") "sn=" sn ", defective=" defective "]")))
 
-(defrecord Car [engine coachworks wheels color]
+(defrecord Car [sn engine coachworks wheels color]
   Object
   (toString [_]
-    (str "Car[engine=" engine ", coachworks=" coachworks ", wheels=" wheels ", color=" color "]")))
+    (str "Car[sn=" sn ", engine=" engine ", coachworks=" coachworks ", wheels=" wheels ", color=" color "]")))
 
 (def engine-defectivity-prob 0.1)
 (def coachworks-defectivity-prob 0.1)
@@ -56,12 +56,12 @@
           (>! dst-belt car-part))
         (recur (<! src-belt))))))
 
-(defn assemble-car [engine-belt coachworks-belt wheels-belt dst-belt]
+(defn assemble-car [sn-counter engine-belt coachworks-belt wheels-belt dst-belt]
   (go-loop [engine (<! engine-belt) coachworks (<! coachworks-belt)
             wheels (repeatedly 4 #(<!! wheels-belt))]
     (when (every? some? (into [] (concat [engine coachworks] wheels)))
       (do
-        (>! dst-belt (->Car engine coachworks wheels :no-color))
+        (>! dst-belt (->Car (next-sn sn-counter) engine coachworks wheels :no-color))
         (recur (<! engine-belt) (<! coachworks-belt) (repeatedly 4 #(<!! wheels-belt)))))))
 
 (defn select-paint [src-belt r-belt g-belt b-belt]
@@ -112,7 +112,7 @@
         (filter-defective engine->fengine fengine->assembly)
         (filter-defective coachworks->fcoachworks fcoachworks->assembly)
         (filter-defective wheels->fwheels fwheels->assembly)
-        (assemble-car fengine->assembly fcoachworks->assembly fwheels->assembly assembly->splitter)
+        (assemble-car sn-counter fengine->assembly fcoachworks->assembly fwheels->assembly assembly->splitter)
         (select-paint assembly->splitter splitter->rpaint splitter->gpaint splitter->bpaint)
         (paint-car splitter->rpaint rpaint->merger :red)
         (paint-car splitter->gpaint gpaint->merger :green)
