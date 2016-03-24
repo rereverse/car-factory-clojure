@@ -1,6 +1,6 @@
 (ns car-factory.core
-  (:require [clojure.core.async :refer [go-loop chan <! >! mix admix close! <!!]])
-  (:import [java.util.concurrent ThreadLocalRandom])
+  (:require [clojure.core.async :as as])
+  (:import [java.util.concurrent ThreadLocalRandom TimeUnit])
   (:gen-class))
 
 (defrecord CarPart [sn type defective]
@@ -9,16 +9,19 @@
     (str (condp = type
            :engine "Engine["
            :wheel "Wheel["
-           :coachworks "Coachworks[") "sn=" sn ", defective=" defective "]")))
+           :coachwork "Coachworks[") "sn=" sn ", defective=" defective "]")))
 
 (defrecord Car [sn engine coachworks wheels color]
   Object
   (toString [_]
     (str "Car[sn=" sn ", engine=" engine ", coachworks=" coachworks ", wheels=" wheels ", color=" color "]")))
 
-(def engine-defectivity-prob 0.1)
+(def engine-defective-prob 0.1)
 (def coachworks-defectivity-prob 0.1)
 (def wheel-defectivity-prob 0.1)
+(def buf-size 50)
+(def wheels-per-car 4)
+(def million 1000000)
 
 (defn- not-defective? [car-part]
   (not (:defective car-part)))
@@ -26,98 +29,66 @@
 (defn- next-sn [sn-counter]
   (swap! sn-counter inc))
 
-(defn- tlrand-defective [probability]
-  (<= (.. ThreadLocalRandom (current) (nextDouble)) probability))
+(defn- make-painter [color]
+  (fn [car] (assoc car :color color)))
+
+(defn- tlrand-boolean [probability-true]
+  (>= (.. ThreadLocalRandom (current) (nextDouble)) (- 1.0 probability-true)))
 
 (defn- tlrand-nth [coll]
   (nth coll (.. ThreadLocalRandom (current) (nextInt (count coll)))))
 
+(defn- rand-rgb [_]
+  (tlrand-nth [:red :green :blue]))
+
 (defn- produce-car-parts
   [dst-belt sn-counter car-part-type defective-probability]
-  (go-loop [sn (next-sn sn-counter)]
+  (as/go-loop [sn (next-sn sn-counter)]
     (when
-      (>! dst-belt (->CarPart sn car-part-type (tlrand-defective defective-probability)))
+      (as/>! dst-belt (->CarPart sn car-part-type (tlrand-boolean defective-probability)))
       (recur (next-sn sn-counter)))))
 
-(defn produce-engines [dst-belt sn-counter]
-  (produce-car-parts dst-belt sn-counter :engine engine-defectivity-prob))
-
-(defn produce-coachworks [dst-belt sn-counter]
-  (produce-car-parts dst-belt sn-counter :coachworks coachworks-defectivity-prob))
-
-(defn produce-wheels [dst-belt sn-counter]
-  (produce-car-parts dst-belt sn-counter :wheel wheel-defectivity-prob))
-
-(defn filter-defective [src-belt dst-belt]
-  (go-loop [car-part (<! src-belt)]
-    (when (some? car-part)
-      (do
-        (when (not-defective? car-part)
-          (>! dst-belt car-part))
-        (recur (<! src-belt))))))
-
-(defn assemble-car [sn-counter engine-belt coachworks-belt wheels-belt dst-belt]
-  (go-loop [engine (<! engine-belt) coachworks (<! coachworks-belt)
-            wheels (repeatedly 4 #(<!! wheels-belt))]
-    (when (every? some? (into [] (concat [engine coachworks] wheels)))
-      (do
-        (>! dst-belt (->Car (next-sn sn-counter) engine coachworks wheels :no-color))
-        (recur (<! engine-belt) (<! coachworks-belt) (repeatedly 4 #(<!! wheels-belt)))))))
-
-(defn select-paint [src-belt r-belt g-belt b-belt]
-  (go-loop [car (<! src-belt)]
-    (when (some? car)
-      (do
-        (>! (tlrand-nth [r-belt g-belt b-belt]) car)
-        (recur (<! src-belt))))))
-
-(defn paint-car [src-belt dst-belt color]
-  (go-loop [car (<! src-belt)]
-    (when (some? car)
-      (do
-        (>! dst-belt (assoc car :color color))
-        (recur (<! src-belt))))))
-
-(defn merge-painted [r-belt g-belt b-belt dest-belt]
-  (let [m (mix dest-belt)]
-    (doall (for [b [r-belt g-belt b-belt]] (admix m b)))))
-
-(defn print-if-anniversary [n car]
-  (when (= 0 (mod n 50000))
+(defn- print-if-anniversary [n car]
+  (when (= 0 (mod n million))
     (do
-      (printf "Car number %9d: %s\n" n car)
+      (printf "%3d M: %s\n" (/ n million) car)
       (flush))))
 
+(defn assemble-car [sn-counter engine-belt coachworks-belt wheels-belt]
+  (let [out (as/chan buf-size)]
+    (as/go-loop [engine (as/<! engine-belt) coachworks (as/<! coachworks-belt) wheels (as/<! wheels-belt)]
+      (when (and (some? engine) (some? coachworks) (= wheels-per-car (count wheels)))
+        (do
+          (as/>! out (->Car (next-sn sn-counter) engine coachworks wheels :no-color))
+          (recur (as/<! engine-belt) (as/<! coachworks-belt) (as/<! wheels-belt)))))
+    out))
+
 (defn production-counter [out-belt]
-  (go-loop [car (<! out-belt) n 0]
-    (if (some? car)
-      (do
-        (print-if-anniversary n car)
-        (recur (<! out-belt) (inc n)))
-      n)))
+  (as/reduce (fn [n car] (print-if-anniversary n car) (inc n)) 0 out-belt))
 
 (defn -main
   [duration]
   (let [t (Integer. ^String duration)
-        [engine->fengine coachworks->fcoachworks wheels->fwheels
-         fengine->assembly fcoachworks->assembly fwheels->assembly
-         assembly->splitter splitter->rpaint splitter->gpaint splitter->bpaint
-         rpaint->merger gpaint->merger bpaint->merger merger->counter
-         :as channels] (repeatedly 14 chan)
         sn-counter (atom 0)
-        result-chan (production-counter merger->counter)]
-    (do (produce-engines engine->fengine sn-counter)
-        (produce-coachworks coachworks->fcoachworks sn-counter)
-        (produce-wheels wheels->fwheels sn-counter)
-        (filter-defective engine->fengine fengine->assembly)
-        (filter-defective coachworks->fcoachworks fcoachworks->assembly)
-        (filter-defective wheels->fwheels fwheels->assembly)
-        (assemble-car sn-counter fengine->assembly fcoachworks->assembly fwheels->assembly assembly->splitter)
-        (select-paint assembly->splitter splitter->rpaint splitter->gpaint splitter->bpaint)
-        (paint-car splitter->rpaint rpaint->merger :red)
-        (paint-car splitter->gpaint gpaint->merger :green)
-        (paint-car splitter->bpaint bpaint->merger :blue)
-        (merge-painted rpaint->merger gpaint->merger bpaint->merger merger->counter)
-        (Thread/sleep (* 1000 t))
-        (doall (for [c channels] (close! c)))
-        (println (str "Cars/second: " (/ (<!! result-chan) (double t)))))))
+        engines (as/chan buf-size (filter not-defective?))
+        coachworks (as/chan buf-size (filter not-defective?))
+        wheels (as/chan buf-size (comp (partition-all wheels-per-car) (filter not-defective?)))
+        assembled-cars (assemble-car sn-counter engines coachworks wheels)
+        pub-assembled-cars (as/pub assembled-cars rand-rgb (fn [_] buf-size))
+        red-cars (as/chan buf-size (map (make-painter :red)))
+        green-cars (as/chan buf-size (map (make-painter :green)))
+        blue-cars (as/chan buf-size (map (make-painter :blue)))
+        painted-cars (as/merge [red-cars green-cars blue-cars] buf-size)
+        result-chan (production-counter painted-cars)]
+    (do
+      (as/sub pub-assembled-cars :red red-cars)
+      (as/sub pub-assembled-cars :green green-cars)
+      (as/sub pub-assembled-cars :blue blue-cars)
+      (produce-car-parts engines sn-counter :engine engine-defective-prob)
+      (produce-car-parts coachworks sn-counter :coachwork coachworks-defectivity-prob)
+      (produce-car-parts wheels sn-counter :wheel wheel-defectivity-prob)
+      (Thread/sleep (.toMillis TimeUnit/SECONDS t))
+      (doall (for [c [engines coachworks wheels assembled-cars red-cars
+                      green-cars blue-cars painted-cars]]
+               (as/close! c)))
+      (println (str "Cars/second: " (/ (as/<!! result-chan) (double t)))))))
