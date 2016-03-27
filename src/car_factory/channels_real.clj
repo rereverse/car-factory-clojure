@@ -29,7 +29,7 @@
     out))
 
 (defn production-counter [out-belt]
-  (a/reduce (fn [n car] (print-every-millionth-car n car) (inc n)) 0 out-belt))
+  (a/reduce (fn [n car] (print-every-millionth-car n car) (inc n)) 1 out-belt))
 
 (defn -main
   [duration]
@@ -46,6 +46,7 @@
         painted-cars (a/merge [red-cars green-cars blue-cars] buf-size)
         result-chan (production-counter painted-cars)]
     (do
+      (println "Channels, real")
       (a/sub pub-assembled-cars :red red-cars)
       (a/sub pub-assembled-cars :green green-cars)
       (a/sub pub-assembled-cars :blue blue-cars)

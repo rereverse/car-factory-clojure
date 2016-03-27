@@ -46,7 +46,7 @@
     (doall (for [b [r-belt g-belt b-belt]] (a/admix m b)))))
 
 (defn production-counter [out-belt]
-  (a/go-loop [car (a/<! out-belt) n 0]
+  (a/go-loop [car (a/<! out-belt) n 1]
     (if (some? car)
       (do
         (print-every-millionth-car n car)
@@ -63,18 +63,20 @@
          :as channels] (repeatedly 14 a/chan)
         sn-counter (atom 0)
         result-chan (production-counter merger->counter)]
-    (do (produce-car-parts engines->fengines sn-counter :engine engine-defective-prob)
-        (produce-car-parts coachworks->fcoachworks sn-counter :coachwork coachwork-defective-prob)
-        (produce-car-parts wheels->fwheels sn-counter :wheel wheel-defective-prob)
-        (filter-defective engines->fengines fengines->assembly)
-        (filter-defective coachworks->fcoachworks fcoachworks->assembly)
-        (filter-defective wheels->fwheels fwheels->assembly)
-        (assemble-car sn-counter fengines->assembly fcoachworks->assembly fwheels->assembly assembly->splitter)
-        (select-paint assembly->splitter splitter->rpaint splitter->gpaint splitter->bpaint)
-        (paint-car splitter->rpaint rpaint->merger :red)
-        (paint-car splitter->gpaint gpaint->merger :green)
-        (paint-car splitter->bpaint bpaint->merger :blue)
-        (merge-painted rpaint->merger gpaint->merger bpaint->merger merger->counter)
-        (Thread/sleep (.toMillis TimeUnit/SECONDS t))
-        (doall (for [c channels] (a/close! c)))
-        (println (str "Cars/second: " (/ (a/<!! result-chan) (double t)))))))
+    (do
+      (println "Channels, naive")
+      (produce-car-parts engines->fengines sn-counter :engine engine-defective-prob)
+      (produce-car-parts coachworks->fcoachworks sn-counter :coachwork coachwork-defective-prob)
+      (produce-car-parts wheels->fwheels sn-counter :wheel wheel-defective-prob)
+      (filter-defective engines->fengines fengines->assembly)
+      (filter-defective coachworks->fcoachworks fcoachworks->assembly)
+      (filter-defective wheels->fwheels fwheels->assembly)
+      (assemble-car sn-counter fengines->assembly fcoachworks->assembly fwheels->assembly assembly->splitter)
+      (select-paint assembly->splitter splitter->rpaint splitter->gpaint splitter->bpaint)
+      (paint-car splitter->rpaint rpaint->merger :red)
+      (paint-car splitter->gpaint gpaint->merger :green)
+      (paint-car splitter->bpaint bpaint->merger :blue)
+      (merge-painted rpaint->merger gpaint->merger bpaint->merger merger->counter)
+      (Thread/sleep (.toMillis TimeUnit/SECONDS t))
+      (doall (for [c channels] (a/close! c)))
+      (println (str "Cars/second: " (/ (a/<!! result-chan) (double t)))))))
